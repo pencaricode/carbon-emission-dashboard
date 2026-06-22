@@ -1,1201 +1,957 @@
-import streamlit as st
+from __future__ import annotations
+
+import math
+from io import BytesIO
+from typing import Dict, List
+
 import pandas as pd
 import plotly.express as px
-
-from data.emission_factors import *
-from utils.calculations import *
-from utils.recommendations import *
-from database.db import *
-from utils.pdf_export import *
+import plotly.graph_objects as go
+import streamlit as st
 
 
 # =====================================================
 # PAGE CONFIG
 # =====================================================
 st.set_page_config(
-    page_title="Dashboard Emisi Karbon",
-    layout="wide"
+    page_title="PHE GHG Carbon Dashboard",
+    page_icon="🌱",
+    layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
+
 # =====================================================
-# CUSTOM CSS
+# THEME HANDLING
 # =====================================================
-st.markdown("""
-<style>
-.hero-card {
-    background: linear-gradient(135deg, #0f172a 0%, #064e3b 100%);
-    padding: 32px;
-    border-radius: 24px;
-    color: white;
-    margin-bottom: 24px;
+def get_theme() -> str:
+    theme = st.query_params.get("theme", "light")
+    if isinstance(theme, list):
+        theme = theme[0]
+    return "dark" if theme == "dark" else "light"
+
+
+def switch_theme() -> None:
+    next_theme = "light" if get_theme() == "dark" else "dark"
+    st.query_params["theme"] = next_theme
+    st.rerun()
+
+
+THEME = get_theme()
+IS_DARK = THEME == "dark"
+
+COLORS = {
+    "dark": {
+        "bg": "#07111f",
+        "card": "#111c2e",
+        "soft": "#18263a",
+        "text": "#f8fafc",
+        "muted": "#b6c2d1",
+        "border": "#314158",
+        "primary": "#10b981",
+        "secondary": "#38bdf8",
+        "danger": "#f97316",
+        "plot_template": "plotly_dark",
+    },
+    "light": {
+        "bg": "#f8fafc",
+        "card": "#ffffff",
+        "soft": "#eef6f3",
+        "text": "#0f172a",
+        "muted": "#475569",
+        "border": "#d8e0ea",
+        "primary": "#059669",
+        "secondary": "#0284c7",
+        "danger": "#ea580c",
+        "plot_template": "plotly_white",
+    },
+}[THEME]
+
+
+# =====================================================
+# STYLE
+# =====================================================
+st.markdown(
+    f"""
+    <style>
+    :root {{
+        color-scheme: {THEME};
+    }}
+
+    html, body, [data-testid="stAppViewContainer"] {{
+        background: {COLORS["bg"]} !important;
+        color: {COLORS["text"]} !important;
+    }}
+
+    [data-testid="stHeader"] {{
+        background: transparent !important;
+    }}
+
+    [data-testid="stSidebar"], [data-testid="stSidebarContent"] {{
+        display: none !important;
+        width: 0 !important;
+        min-width: 0 !important;
+    }}
+
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="stSidebarCollapseButton"],
+    button[title="Collapse sidebar"],
+    button[title="Expand sidebar"] {{
+        display: none !important;
+    }}
+
+    .block-container {{
+        padding-top: 2.3rem !important;
+        padding-bottom: 3rem !important;
+        max-width: 1280px !important;
+    }}
+
+    h1, h2, h3, h4, h5, h6, p, div, label, span {{
+        color: {COLORS["text"]};
+    }}
+
+    .hero {{
+        padding: 2rem 2.2rem;
+        border-radius: 24px;
+        background: linear-gradient(135deg, #0f172a 0%, #064e3b 100%);
+        border: 1px solid rgba(255,255,255,0.08);
+        margin-bottom: 1.3rem;
+    }}
+
+    .hero h1 {{
+        color: white !important;
+        font-size: clamp(2rem, 4vw, 3.3rem);
+        margin: 0 0 0.8rem 0;
+        letter-spacing: -0.04em;
+    }}
+
+    .hero p {{
+        color: #d1fae5 !important;
+        font-size: 1rem;
+        line-height: 1.65;
+        max-width: 920px;
+        margin: 0;
+    }}
+
+    .note-box {{
+        padding: 1rem 1.15rem;
+        border-radius: 14px;
+        background: {COLORS["card"]};
+        border: 1px solid {COLORS["border"]};
+        border-left: 6px solid {COLORS["primary"]};
+        color: {COLORS["text"]};
+        margin: 0.8rem 0 1.2rem 0;
+    }}
+
+    .metric-card {{
+        padding: 1.1rem 1.1rem;
+        border-radius: 16px;
+        border: 1px solid {COLORS["border"]};
+        background: {COLORS["card"]};
+        min-height: 118px;
+    }}
+
+    .metric-label {{
+        font-size: 0.82rem;
+        font-weight: 700;
+        color: {COLORS["muted"]};
+        margin-bottom: 0.55rem;
+    }}
+
+    .metric-value {{
+        font-size: clamp(1.35rem, 2vw, 2.15rem);
+        font-weight: 800;
+        color: {COLORS["text"]};
+        letter-spacing: -0.03em;
+    }}
+
+    .metric-caption {{
+        font-size: 0.78rem;
+        color: {COLORS["muted"]};
+        margin-top: 0.35rem;
+    }}
+
+    .section-card {{
+        padding: 1.2rem 1.25rem;
+        border-radius: 16px;
+        border: 1px solid {COLORS["border"]};
+        background: {COLORS["card"]};
+        margin: 0.75rem 0;
+    }}
+
+    .alert-red {{
+        border-left: 6px solid #ef4444;
+        background: {"#3b1111" if IS_DARK else "#fef2f2"};
+        border-radius: 14px;
+        padding: 1rem 1.15rem;
+        margin: 0.8rem 0;
+    }}
+
+    .alert-green {{
+        border-left: 6px solid #10b981;
+        background: {"#083b2b" if IS_DARK else "#ecfdf5"};
+        border-radius: 14px;
+        padding: 1rem 1.15rem;
+        margin: 0.8rem 0;
+    }}
+
+    .small-muted {{
+        color: {COLORS["muted"]};
+        font-size: 0.88rem;
+        line-height: 1.55;
+    }}
+
+    .theme-wrap {{
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 0.5rem;
+    }}
+
+    div[data-testid="stButton"] > button {{
+        border-radius: 999px !important;
+        border: 1px solid {COLORS["border"]} !important;
+        background-color: {COLORS["card"]} !important;
+        color: {COLORS["text"]} !important;
+        box-shadow: none !important;
+        font-weight: 700 !important;
+    }}
+
+    div[data-testid="stButton"] > button:hover {{
+        border-color: {COLORS["primary"]} !important;
+        background-color: {COLORS["soft"]} !important;
+        color: {COLORS["text"]} !important;
+    }}
+
+    .stTabs [data-baseweb="tab-list"] {{
+        gap: 0.5rem;
+    }}
+
+    .stTabs [data-baseweb="tab"] {{
+        color: {COLORS["muted"]};
+        font-weight: 800;
+    }}
+
+    .stTabs [aria-selected="true"] {{
+        color: {COLORS["primary"]} !important;
+    }}
+
+    .dataframe, .stDataFrame {{
+        border-radius: 12px !important;
+    }}
+
+    @media (max-width: 900px) {{
+        .block-container {{
+            padding-left: 1rem !important;
+            padding-right: 1rem !important;
+        }}
+
+        .hero {{
+            padding: 1.4rem;
+        }}
+    }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# =====================================================
+# DATA HELPERS
+# =====================================================
+def id_num(value: str) -> float:
+    """Convert Indonesian-formatted number string into float."""
+    return float(value.replace(".", "").replace(",", "."))
+
+
+def fmt_ton(value: float, decimals: int = 0) -> str:
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "-"
+    return f"{value:,.{decimals}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def fmt_million(value_ton: float) -> str:
+    return f"{value_ton / 1_000_000:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def make_metric(label: str, value: str, caption: str = "") -> None:
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">{value}</div>
+            <div class="metric-caption">{caption}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def normalize_unit_label(unit: str) -> str:
+    return unit.strip()
+
+
+# =====================================================
+# BASELINE DATA FROM PHE 2024 SUSTAINABILITY / GHG REPORT
+# Units for dashboard baseline are TonCO2e unless stated.
+# =====================================================
+SCOPE_TREND = pd.DataFrame(
+    [
+        {"Year": 2022, "Scope 1": 12158.43 * 1000, "Scope 2": 1758.16 * 1000, "Scope 1+2": 13916.59 * 1000, "Intensity": 0.0389},
+        {"Year": 2023, "Scope 1": 11994.21 * 1000, "Scope 2": 1971.92 * 1000, "Scope 1+2": 13966.13 * 1000, "Intensity": 0.0384},
+        {"Year": 2024, "Scope 1": 12458.21 * 1000, "Scope 2": 2484.49 * 1000, "Scope 1+2": 14942.70 * 1000, "Intensity": 0.0471},
+    ]
+)
+
+SCOPE1_SOURCE_TREND = pd.DataFrame(
+    [
+        {"Source": "Internal & External Combustion", "2024": 7232.75 * 1000, "2023": 7647.33 * 1000, "2022": 7693.96 * 1000},
+        {"Source": "Flare", "2024": 2293.39 * 1000, "2023": 2848.12 * 1000, "2022": 2824.05 * 1000},
+        {"Source": "Venting & Process", "2024": 2651.33 * 1000, "2023": 1205.20 * 1000, "2022": 1346.29 * 1000},
+        {"Source": "Fugitive", "2024": 280.68 * 1000, "2023": 293.55 * 1000, "2022": 294.13 * 1000},
+    ]
+)
+
+SCOPE1_BY_UNIT = pd.DataFrame(
+    [
+        {"Unit": "Regional 1 - Sumatera", "Internal & External Combustion": 1810.65 * 1000, "Flare": 635.96 * 1000, "Venting & Process": 16.38 * 1000, "Fugitive": 20.18 * 1000},
+        {"Unit": "Regional 2 - Jawa", "Internal & External Combustion": 1201.11 * 1000, "Flare": 793.79 * 1000, "Venting & Process": 426.95 * 1000, "Fugitive": 56.47 * 1000},
+        {"Unit": "Regional 3 - Kalimantan", "Internal & External Combustion": 1457.96 * 1000, "Flare": 274.90 * 1000, "Venting & Process": 4.76 * 1000, "Fugitive": 157.23 * 1000},
+        {"Unit": "Regional 4 - Indonesia Timur", "Internal & External Combustion": 815.75 * 1000, "Flare": 504.81 * 1000, "Venting & Process": 1688.50 * 1000, "Fugitive": 39.02 * 1000},
+        {"Unit": "Regional 5 - Internasional", "Internal & External Combustion": 162.59 * 1000, "Flare": 31.03 * 1000, "Venting & Process": 1.45 * 1000, "Fugitive": 5.29 * 1000},
+        {"Unit": "PDSI", "Internal & External Combustion": 7.28 * 1000, "Flare": 0.0, "Venting & Process": 0.0, "Fugitive": 0.0},
+        {"Unit": "Elnusa", "Internal & External Combustion": 85.39 * 1000, "Flare": 0.0, "Venting & Process": 0.0, "Fugitive": 0.0},
+        {"Unit": "PT Badak NGL", "Internal & External Combustion": 1692.03 * 1000, "Flare": 52.90 * 1000, "Venting & Process": 513.28 * 1000, "Fugitive": 2.49 * 1000},
+    ]
+)
+SCOPE1_BY_UNIT["Scope 1"] = SCOPE1_BY_UNIT[
+    ["Internal & External Combustion", "Flare", "Venting & Process", "Fugitive"]
+].sum(axis=1)
+
+SCOPE2_BY_UNIT = pd.DataFrame(
+    [
+        {"Unit": "Regional 1 - Sumatera", "Scope 2": 2139.13 * 1000},
+        {"Unit": "Regional 2 - Jawa", "Scope 2": 11.44 * 1000},
+        {"Unit": "Regional 3 - Kalimantan", "Scope 2": 105.53 * 1000},
+        {"Unit": "Regional 4 - Indonesia Timur", "Scope 2": 61.77 * 1000},
+        {"Unit": "Regional 5 - Internasional", "Scope 2": 141.61 * 1000},
+        {"Unit": "PDSI", "Scope 2": 0.0},
+        {"Unit": "Elnusa", "Scope 2": 15.23 * 1000},
+        {"Unit": "PT Badak NGL", "Scope 2": 9.77 * 1000},
+    ]
+)
+
+REGIONAL_BASELINE = SCOPE1_BY_UNIT[["Unit", "Scope 1"]].merge(SCOPE2_BY_UNIT, on="Unit")
+REGIONAL_BASELINE["Scope 1+2"] = REGIONAL_BASELINE["Scope 1"] + REGIONAL_BASELINE["Scope 2"]
+
+SCOPE3_CATEGORIES = pd.DataFrame(
+    [
+        {"Category": "Category 3 - Fuel and energy-related activities", "2024": 0.199 * 1_000_000, "2023": 0.578 * 1_000_000},
+        {"Category": "Category 5 - Waste generated in operations", "2024": 0.0283 * 1_000_000, "2023": 0.0385 * 1_000_000},
+        {"Category": "Category 10 - Processing of sold products", "2024": 2.13 * 1_000_000, "2023": 2.49 * 1_000_000},
+        {"Category": "Category 11 - Use of sold products", "2024": 0.924 * 1_000_000, "2023": 0.638 * 1_000_000},
+    ]
+)
+
+TARGETS = {
+    "bau_2030": 20_493_169.95,
+    "target_2030": 13_935_355.56,
+    "reduction_target_pct": 32.0,
+    "nze_year": 2060,
+    "actual_reduction_2024_vs_bau": 1_186_000.0,
+    "intensity_2024": 0.0471,
+    "intensity_yoy_increase_pct": 22.8,
 }
 
-.hero-title {
-    font-size: 42px;
-    font-weight: 800;
-    margin-bottom: 10px;
-}
+SOURCE_NOTES = pd.DataFrame(
+    [
+        {"Item": "Reporting year", "Value": "2024"},
+        {"Item": "Boundary", "Value": "Operational control approach"},
+        {"Item": "Operational units", "Value": "Regional 1–5, PDSI, Elnusa, PT Badak NGL"},
+        {"Item": "Scope 1 source categories", "Value": "Internal/external combustion, flare, venting & process, fugitive"},
+        {"Item": "Scope 2 source", "Value": "Purchased electricity from third parties"},
+        {"Item": "Scope 3 categories", "Value": "Category 3, 5, 10, 11"},
+        {"Item": "Calculation standard", "Value": "Pertamina standard, Permen LH No. 12/2012, GHG Protocol/IPCC"},
+    ]
+)
 
-.hero-subtitle {
-    font-size: 17px;
-    line-height: 1.6;
-    color: #d1fae5;
-    max-width: 900px;
-}
 
-.info-card {
-    background-color: #ffffff;
-    padding: 22px;
-    border-radius: 18px;
-    border: 1px solid #e5e7eb;
-    box-shadow: 0 4px 14px rgba(0,0,0,0.04);
-    height: 100%;
-}
+# =====================================================
+# SESSION STATE FOR 2025 INPUTS
+# =====================================================
+if "records_2025" not in st.session_state:
+    st.session_state.records_2025 = []
 
-.info-title {
-    font-size: 20px;
-    font-weight: 700;
-    color: #111827;
-    margin-bottom: 10px;
-}
 
-.info-text {
-    font-size: 15px;
-    line-height: 1.6;
-    color: #374151;
-}
+# =====================================================
+# CHART HELPERS
+# =====================================================
+def update_fig_layout(fig: go.Figure, height: int = 430) -> go.Figure:
+    fig.update_layout(
+        template=COLORS["plot_template"],
+        height=height,
+        paper_bgcolor=COLORS["card"],
+        plot_bgcolor=COLORS["card"],
+        font=dict(color=COLORS["text"]),
+        margin=dict(l=20, r=20, t=55, b=40),
+        legend_title_text="",
+    )
+    return fig
 
-.scope-card {
-    background-color: #f9fafb;
-    padding: 20px;
-    border-radius: 18px;
-    border: 1px solid #e5e7eb;
-    height: 100%;
-}
 
-.scope-title {
-    font-size: 19px;
-    font-weight: 700;
-    color: #064e3b;
-    margin-bottom: 8px;
-}
+def to_excel_bytes(sheets: Dict[str, pd.DataFrame]) -> bytes:
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for sheet_name, df in sheets.items():
+            safe_name = sheet_name[:31]
+            df.to_excel(writer, index=False, sheet_name=safe_name)
+    return output.getvalue()
 
-.action-card {
-    background-color: #ecfdf5;
-    padding: 22px;
-    border-radius: 18px;
-    border-left: 6px solid #059669;
-    margin-top: 10px;
-}
-</style>
-""", unsafe_allow_html=True)
+
+def prepare_download_dataset() -> Dict[str, pd.DataFrame]:
+    records_df = pd.DataFrame(st.session_state.records_2025)
+    return {
+        "Scope_Trend": SCOPE_TREND,
+        "Scope1_Source_Trend": SCOPE1_SOURCE_TREND,
+        "Regional_Baseline_2024": REGIONAL_BASELINE,
+        "Scope1_By_Unit_2024": SCOPE1_BY_UNIT,
+        "Scope2_By_Unit_2024": SCOPE2_BY_UNIT,
+        "Scope3_Categories": SCOPE3_CATEGORIES,
+        "Targets": pd.DataFrame([TARGETS]),
+        "Source_Notes": SOURCE_NOTES,
+        "Input_2025": records_df if not records_df.empty else pd.DataFrame(columns=["Year", "Unit", "Scope 1", "Scope 2", "Scope 3", "Scope 1+2", "Total"]),
+    }
+
 
 # =====================================================
 # HEADER
 # =====================================================
-# =====================================================
-# HERO SECTION
-# =====================================================
-st.markdown("""
-<div class="hero-card">
-    <div class="hero-title">Jejak Karbon Perusahaan Hari Ini</div>
-    <div class="hero-subtitle">
-        Pantau, pahami, dan kurangi emisi karbon dari aktivitas operasional
-        perusahaan berdasarkan Scope 1, Scope 2, dan Scope 3. Dashboard ini
-        dirancang sebagai ESG analytics dashboard, carbon footprint education
-        dashboard, dan sustainability reporting tool.
+theme_col, _ = st.columns([1, 10])
+with theme_col:
+    icon = "☀️" if IS_DARK else "🌙"
+    help_text = "Ubah ke mode terang" if IS_DARK else "Ubah ke mode gelap"
+    if st.button(icon, help=help_text, key="theme_button"):
+        switch_theme()
+
+st.markdown(
+    """
+    <div class="hero">
+        <h1>Dashboard GHG Emissions PHE 2024 + Kalkulator 2025</h1>
+        <p>
+            Dashboard ini disusun agar relevan dengan format GHG Report PT Pertamina Hulu Energi:
+            baseline 2024 per regional/unit, emisi Scope 1 berdasarkan sumber, Scope 2 listrik pihak ketiga,
+            Scope 3 kategori prioritas, target reduksi, dan kalkulator untuk input tahun berikutnya.
+        </p>
     </div>
-</div>
-""", unsafe_allow_html=True)
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="note-box">
+        <b>Alur capstone:</b> dataset GHG report → indikator → visualisasi → red flag → insight → rekomendasi → kalkulator 2025.
+        Data historis 2024 dipakai sebagai baseline, sedangkan kalkulator dipakai untuk simulasi atau pencatatan periode berikutnya.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # =====================================================
-# LOAD DATABASE
+# TABS
 # =====================================================
-history = get_all_emissions()
-
-history_df = pd.DataFrame(
-    history,
-    columns=[
-        "ID",
-        "Company",
-        "Period",
-        "Scope 1",
-        "Scope 2",
-        "Scope 3",
-        "Total",
-        "Created At"
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    [
+        "Ikhtisar GHG 2024",
+        "Regional & Sumber Emisi",
+        "Kalkulator 2025",
+        "Perbandingan & Red Flag",
+        "Metodologi & Kesiapan",
     ]
 )
 
-# =====================================================
-# FORMAT DATE COLUMN
-# =====================================================
-if not history_df.empty:
-
-    history_df["Created At"] = pd.to_datetime(
-        history_df["Created At"],
-        errors="coerce"
-    )
 
 # =====================================================
-# SIDEBAR INPUT
+# TAB 1 - GHG OVERVIEW
 # =====================================================
-st.sidebar.header("Input Data Emisi")
-
-user_name = st.sidebar.text_input(
-    "Nama Pengguna"
-)
-
-company = st.sidebar.text_input(
-    "Perusahaan"
-)
-
-period = st.sidebar.text_input(
-    "Periode",
-    value="2025"
-)
-
-
-# =====================================================
-# SCOPE 1A
-# =====================================================
-st.sidebar.subheader("Scope 1A - Emisi Statis")
-
-static_fuel = st.sidebar.selectbox(
-    "Bahan Bakar",
-    list(FUEL_DATABASE.keys())
-)
-
-static_quantity = st.sidebar.number_input(
-    "Jumlah Konsumsi",
-    min_value=0.0,
-    value=0.0
-)
-
-
-# =====================================================
-# SCOPE 1B
-# =====================================================
-st.sidebar.subheader("Scope 1B - Emisi Kendaraan")
-
-mobile_fuel = st.sidebar.selectbox(
-    "Bahan Bakar Kendaraan",
-    list(FUEL_DATABASE.keys())
-)
-
-mobile_distance = st.sidebar.number_input(
-    "Jarak Tempuh (km)",
-    min_value=0.0,
-    value=0.0
-)
-
-mobile_efficiency = st.sidebar.number_input(
-    "Efisiensi Kendaraan (km/l)",
-    min_value=1.0,
-    value=1.0
-)
-
-
-# =====================================================
-# SCOPE 2
-# =====================================================
-st.sidebar.subheader("Scope 2 - Listrik")
-
-scope2_kwh = st.sidebar.number_input(
-    "Konsumsi Listrik (kWh)",
-    min_value=0.0,
-    value=0.0
-)
-
-
-# =====================================================
-# SCOPE 3
-# =====================================================
-st.sidebar.subheader("Scope 3 - Emisi Tidak Langsung")
-
-scope3_category = st.sidebar.selectbox(
-    "Kategori Scope 3",
-    list(SCOPE3_DATABASE.keys())
-)
-
-scope3_quantity = st.sidebar.number_input(
-    "Jumlah Aktivitas",
-    min_value=0.0,
-    value=0.0
-)
-
-
-# =====================================================
-# BUTTON
-# =====================================================
-calculate = st.sidebar.button(
-    "Hitung Emisi"
-)
-
-
-# =====================================================
-# SAVE NEW DATA
-# =====================================================
-if calculate:
-
-    if company.strip() == "":
-        st.error("Nama perusahaan wajib diisi.")
-
-    else:
-        # Scope 1A
-        static_emission = calculate_scope1_static(
-            static_fuel,
-            static_quantity
-        )
-
-        # Scope 1B
-        mobile_emission = calculate_scope1_mobile(
-            mobile_fuel,
-            mobile_distance,
-            mobile_efficiency
-        )
-
-        scope1_total = (
-            static_emission +
-            mobile_emission
-        )
-
-        # Scope 2
-        scope2_total = calculate_scope2(
-            scope2_kwh
-        )
-
-        # Scope 3
-        scope3_total = calculate_scope3(
-            scope3_category,
-            scope3_quantity
-        )
-
-        # Total kgCO2e
-        total_kg = (
-            scope1_total +
-            scope2_total +
-            scope3_total
-        )
-
-        # Convert to tCO2e
-        scope1_ton = kg_to_ton(scope1_total)
-
-        scope2_ton = kg_to_ton(scope2_total)
-
-        scope3_ton = kg_to_ton(scope3_total)
-
-        total_ton = kg_to_ton(total_kg)
-
-        # Save to database
-        insert_emission(
-            company,
-            period,
-            scope1_ton,
-            scope2_ton,
-            scope3_ton,
-            total_ton
-        )
-
-        st.success("Data emisi berhasil disimpan.")
-
-        st.rerun()
-
-
-# =====================================================
-# FILTER SECTION
-# =====================================================
-st.sidebar.divider()
-
-st.sidebar.subheader("Filter Analytics")
-
-if not history_df.empty:
-
-    company_options = ["All"] + sorted(
-        history_df["Company"].astype(str).unique().tolist()
-    )
-
-    selected_company = st.sidebar.selectbox(
-        "Filter Perusahaan",
-        company_options
-    )
-
-    period_options = ["All"] + sorted(
-        history_df["Period"].astype(str).unique().tolist()
-    )
-
-    selected_period = st.sidebar.selectbox(
-        "Filter Periode",
-        period_options
-    )
-
-    # =================================================
-    # DATE RANGE FILTER
-    # =================================================
-    min_date = history_df["Created At"].min().date()
-
-    max_date = history_df["Created At"].max().date()
-
-    selected_date_range = st.sidebar.date_input(
-        "Filter Rentang Tanggal",
-        value=(
-            min_date,
-            max_date
-        ),
-        min_value=min_date,
-        max_value=max_date
-    )
-
-else:
-
-    selected_company = "All"
-    selected_period = "All"
-    selected_date_range = None
-
-# =====================================================
-# TARGET REDUCTION INPUT
-# =====================================================
-st.sidebar.divider()
-
-st.sidebar.subheader("Target Reduction")
-
-baseline_emission = st.sidebar.number_input(
-    "Baseline Emission (tCO2e)",
-    min_value=0.0,
-    value=1000.0
-)
-
-target_reduction_percent = st.sidebar.number_input(
-    "Target Reduction (%)",
-    min_value=0.0,
-    max_value=100.0,
-    value=20.0
-)
-
-
-# =====================================================
-# APPLY FILTER
-# =====================================================
-filtered_df = history_df.copy()
-
-if not filtered_df.empty:
-
-    if selected_company != "All":
-
-        filtered_df = filtered_df[
-            filtered_df["Company"].astype(str) ==
-            selected_company
-        ]
-
-    if selected_period != "All":
-
-        filtered_df = filtered_df[
-            filtered_df["Period"].astype(str) ==
-            selected_period
-        ]
-
-    if selected_date_range is not None and len(selected_date_range) == 2:
-
-        start_date = selected_date_range[0]
-
-        end_date = selected_date_range[1]
-
-        filtered_df = filtered_df[
-            (filtered_df["Created At"].dt.date >= start_date) &
-            (filtered_df["Created At"].dt.date <= end_date)
-        ]
-# =====================================================
-# CARBON STORYTELLING SECTION
-# =====================================================
-st.subheader("Kenapa Jejak Karbon Ini Penting?")
-
-why_col1, why_col2 = st.columns([2, 1])
-
-with why_col1:
-    st.markdown("""
-    <div class="info-card">
-        <div class="info-title">Dari angka menjadi keputusan</div>
-        <div class="info-text">
-            Setiap aktivitas operasional perusahaan menghasilkan jejak karbon.
-            Dengan mengetahui sumber emisi terbesar, organisasi dapat mengambil
-            keputusan yang lebih tepat untuk mengurangi dampak lingkungan,
-            meningkatkan efisiensi energi, dan mendukung target keberlanjutan.
+with tab1:
+    latest = SCOPE_TREND[SCOPE_TREND["Year"] == 2024].iloc[0]
+    scope3_total_2024 = SCOPE3_CATEGORIES["2024"].sum()
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        make_metric("Scope 1 2024", f"{fmt_million(latest['Scope 1'])} jt", "TonCO2eq")
+    with col2:
+        make_metric("Scope 2 2024", f"{fmt_million(latest['Scope 2'])} jt", "TonCO2eq")
+    with col3:
+        make_metric("Scope 1+2 2024", f"{fmt_million(latest['Scope 1+2'])} jt", "TonCO2eq")
+    with col4:
+        make_metric("Scope 3 2024", f"{fmt_million(scope3_total_2024)} jt", "TonCO2eq")
+    with col5:
+        make_metric("Intensitas 2024", "0,0471", "TonCO2eq/BOE")
+
+    st.markdown(
+        f"""
+        <div class="section-card">
+            <b>Interpretasi cepat:</b> Emisi Scope 1+2 2024 mencapai <b>{fmt_million(latest['Scope 1+2'])} juta TonCO2eq</b>.
+            Intensitas emisi 2024 tercatat <b>0,0471 TonCO2eq/BOE</b>, naik <b>22,8%</b> dibanding tahun sebelumnya.
+            Dashboard ini menempatkan angka tersebut sebagai baseline untuk membaca risiko dan perbandingan tahun 2025.
         </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with why_col2:
-    st.markdown("""
-    <div class="info-card">
-        <div class="info-title">Fokus dashboard</div>
-        <div class="info-text">
-            Dashboard ini membantu membaca emisi, memahami sumbernya,
-            memantau target pengurangan, dan menghasilkan laporan
-            sustainability secara lebih terstruktur.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("")
-
-st.subheader("Memahami Scope Emisi")
-
-scope_col1, scope_col2, scope_col3 = st.columns(3)
-
-with scope_col1:
-    st.markdown("""
-    <div class="scope-card">
-        <div class="scope-title">Scope 1</div>
-        <div class="info-text">
-            Emisi langsung dari aktivitas yang dikendalikan perusahaan,
-            seperti bahan bakar kendaraan operasional, generator, proses
-            pembakaran, dan konsumsi bahan bakar internal.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with scope_col2:
-    st.markdown("""
-    <div class="scope-card">
-        <div class="scope-title">Scope 2</div>
-        <div class="info-text">
-            Emisi tidak langsung dari energi yang dibeli, terutama konsumsi
-            listrik PLN. Scope ini sering menjadi sumber emisi besar pada
-            kantor, kampus, pabrik, dan fasilitas operasional.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-with scope_col3:
-    st.markdown("""
-    <div class="scope-card">
-        <div class="scope-title">Scope 3</div>
-        <div class="info-text">
-            Emisi tidak langsung lain dari rantai nilai, seperti transportasi
-            pihak ketiga, limbah operasional, komuter karyawan, dan pembelian
-            barang atau jasa.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.divider()
-
-# =====================================================
-# DASHBOARD CONTENT
-# =====================================================
-if not filtered_df.empty:
-
-    # =================================================
-    # KPI CALCULATION
-    # =================================================
-    latest_total = filtered_df["Total"].sum()
-
-    latest_scope1 = filtered_df["Scope 1"].sum()
-
-    latest_scope2 = filtered_df["Scope 2"].sum()
-
-    latest_scope3 = filtered_df["Scope 3"].sum()
-
-    scopes = {
-        "Scope 1": latest_scope1,
-        "Scope 2": latest_scope2,
-        "Scope 3": latest_scope3
-    }
-
-    dominant_scope = max(
-        scopes,
-        key=scopes.get
+        """,
+        unsafe_allow_html=True,
     )
 
-    status = get_status(
-        latest_total
-    )
+    c1, c2 = st.columns([1.25, 1])
 
-    recommendation = get_recommendation(
-        latest_scope1,
-        latest_scope2,
-        latest_scope3
-    )
-
-
-    # =================================================
-    # TARGET REDUCTION CALCULATION
-    # =================================================
-    target_emission = baseline_emission * (
-        1 - target_reduction_percent / 100
-    )
-
-    reduction_needed = max(
-        latest_total - target_emission,
-        0
-    )
-
-    actual_reduction = max(
-        baseline_emission - latest_total,
-        0
-    )
-
-    required_reduction = baseline_emission - target_emission
-
-    progress_percent = (
-        actual_reduction / required_reduction * 100
-        if required_reduction > 0
-        else 0
-    )
-
-    progress_percent = min(
-        progress_percent,
-        100
-    )
-
-    # =================================================
-    # DASHBOARD TABS
-    # =================================================
-    overview_tab, analytics_tab, comparison_tab, report_tab = st.tabs(
-        [
-            "Overview",
-            "Analytics",
-            "Comparison",
-            "Report & Data"
-        ]
-    )
-    with overview_tab:
-        # =================================================
-        # KPI CARDS
-        # =================================================
-        kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-
-        kpi1.metric(
-            "🌍 Total Emisi",
-            f"{latest_total:,.2f} tCO2e"
+    with c1:
+        trend_long = SCOPE_TREND.melt(
+            id_vars="Year",
+            value_vars=["Scope 1", "Scope 2", "Scope 1+2"],
+            var_name="Scope",
+            value_name="TonCO2eq",
         )
+        trend_long["Million TonCO2eq"] = trend_long["TonCO2eq"] / 1_000_000
 
-        kpi2.metric(
-            "🔥 Scope Dominan",
-            dominant_scope
-        )
-
-        kpi3.metric(
-            "⚠ Status",
-            status
-        )
-
-        kpi4.metric(
-            "📊 Total Data",
-            len(filtered_df)
-        )
-
-        kpi5.metric(
-            "🎯 Progress Target",
-            f"{progress_percent:.1f}%"
-        )
-
-        st.divider()
-
-
-        # =================================================
-        # TARGET REDUCTION PANEL
-        # =================================================
-        st.subheader("🎯 Target Reduction Progress")
-
-        target_col1, target_col2, target_col3 = st.columns(3)
-
-        target_col1.metric(
-            "Baseline Emission",
-            f"{baseline_emission:,.2f} tCO2e"
-        )
-
-        target_col2.metric(
-            "Target Emission",
-            f"{target_emission:,.2f} tCO2e"
-        )
-
-        target_col3.metric(
-            "Reduction Needed",
-            f"{reduction_needed:,.2f} tCO2e"
-        )
-
-        st.progress(
-            int(progress_percent)
-        )
-
-        if latest_total <= target_emission:
-
-            st.success(
-                "Target reduction sudah tercapai."
-            )
-
-        else:
-
-            st.warning(
-                f"Masih perlu menurunkan {reduction_needed:,.2f} tCO2e untuk mencapai target."
-            )
-
-        st.divider()
-
-
-        # =================================================
-        # MAIN VISUALIZATION
-        # =================================================
-        chart_col1, chart_col2 = st.columns(
-            [2, 1]
-        )
-
-        with chart_col1:
-
-            st.subheader("Distribusi Emisi Global")
-
-            donut_df = pd.DataFrame({
-                "Scope": [
-                    "Scope 1",
-                    "Scope 2",
-                    "Scope 3"
-                ],
-                "Emission": [
-                    latest_scope1,
-                    latest_scope2,
-                    latest_scope3
-                ]
-            })
-
-            fig_donut = px.pie(
-                donut_df,
-                names="Scope",
-                values="Emission",
-                hole=0.65,
-                title="Distribusi Emisi Berdasarkan Scope"
-            )
-
-            fig_donut.update_layout(
-                height=500
-            )
-
-            st.plotly_chart(
-                fig_donut,
-                use_container_width=True
-            )
-
-        with chart_col2:
-
-            st.subheader("Insight")
-
-            st.info(
-                f"Scope dominan saat ini adalah {dominant_scope}."
-            )
-
-            st.write(
-                f"Total emisi berdasarkan filter saat ini adalah **{latest_total:,.2f} tCO2e**."
-            )
-
-            st.write(
-                f"Target pengurangan yang digunakan adalah **{target_reduction_percent:.1f}%** dari baseline."
-            )
-
-            st.write(
-                f"Progress menuju target saat ini adalah **{progress_percent:.1f}%**."
-            )
-
-            st.subheader("Rekomendasi")
-
-            st.warning(
-                recommendation
-            )
-
-            st.markdown("""
-            <div class="action-card">
-                <div class="info-title">Apa yang Bisa Dilakukan?</div>
-                <div class="info-text">
-                    Mulai dari efisiensi listrik, optimalisasi kendaraan operasional,
-                    pengurangan limbah, penggunaan energi terbarukan, hingga evaluasi
-                    rantai pasok. Fokus terbaik adalah mengurangi scope yang paling dominan
-                    terlebih dahulu.
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        st.divider()
-
-    with analytics_tab:
-        # =================================================
-        # TREND ANALYTICS
-        # =================================================
-        st.subheader("Trend Emisi Bulanan")
-
-        trend_df = filtered_df.copy()
-
-        trend_df["Created At"] = pd.to_datetime(
-            trend_df["Created At"]
-        )
-
-        trend_df["Month"] = trend_df[
-            "Created At"
-        ].dt.to_period("M").astype(str)
-
-        monthly_df = trend_df.groupby(
-            "Month"
-        )["Total"].sum().reset_index()
-
-        fig_trend = px.line(
-            monthly_df,
-            x="Month",
-            y="Total",
+        fig = px.line(
+            trend_long,
+            x="Year",
+            y="Million TonCO2eq",
+            color="Scope",
             markers=True,
-            title="Trend Emisi Bulanan"
+            title="Tren Emisi Scope 1, Scope 2, dan Scope 1+2",
         )
+        fig.update_yaxes(title="Juta TonCO2eq")
+        fig.update_xaxes(dtick=1)
+        st.plotly_chart(update_fig_layout(fig), width="stretch")
 
-        fig_trend.update_layout(
-            height=500,
-            xaxis_title="Bulan",
-            yaxis_title="Total Emisi (tCO2e)"
-        )
-
-        st.plotly_chart(
-            fig_trend,
-            use_container_width=True
-        )
-
-        st.divider()
-
-    with comparison_tab:
-        # =================================================
-        # COMPANY COMPARISON ANALYTICS
-        # =================================================
-        st.subheader("Company Comparison Analytics")
-
-        company_comparison_df = filtered_df.groupby(
-            "Company"
-        )[
-            ["Scope 1", "Scope 2", "Scope 3", "Total"]
-        ].sum().reset_index()
-
-        company_comparison_df = company_comparison_df.sort_values(
-            by="Total",
-            ascending=False
-        )
-
-        if not company_comparison_df.empty:
-
-            highest_company = company_comparison_df.iloc[0]["Company"]
-
-            highest_emission = company_comparison_df.iloc[0]["Total"]
-
-            st.info(
-                f"Perusahaan dengan emisi tertinggi adalah **{highest_company}** dengan total emisi **{highest_emission:,.2f} tCO2e**."
-            )
-
-            # =================================================
-            # BAR CHART TOTAL EMISSION BY COMPANY
-            # =================================================
-            fig_company_total = px.bar(
-                company_comparison_df,
-                x="Company",
-                y="Total",
-                title="Total Emisi per Perusahaan",
-                text_auto=".2f"
-            )
-
-            fig_company_total.update_layout(
-                height=500,
-                xaxis_title="Perusahaan",
-                yaxis_title="Total Emisi (tCO2e)"
-            )
-
-            st.plotly_chart(
-                fig_company_total,
-                use_container_width=True
-            )
-
-            # =================================================
-            # STACKED BAR SCOPE CONTRIBUTION
-            # =================================================
-            scope_melt_df = company_comparison_df.melt(
-                id_vars="Company",
-                value_vars=[
-                    "Scope 1",
-                    "Scope 2",
-                    "Scope 3"
-                ],
-                var_name="Scope",
-                value_name="Emission"
-            )
-
-            fig_scope_stack = px.bar(
-                scope_melt_df,
-                x="Company",
-                y="Emission",
-                color="Scope",
-                title="Kontribusi Scope per Perusahaan",
-                text_auto=".2f"
-            )
-
-            fig_scope_stack.update_layout(
-                height=500,
-                xaxis_title="Perusahaan",
-                yaxis_title="Emisi (tCO2e)",
-                barmode="stack"
-            )
-
-            st.plotly_chart(
-                fig_scope_stack,
-                use_container_width=True
-            )
-
-            # =================================================
-            # RANKING TABLE
-            # =================================================
-            st.subheader("Ranking Emisi Perusahaan")
-
-            company_comparison_df["Rank"] = range(
-                1,
-                len(company_comparison_df) + 1
-            )
-
-            company_comparison_df = company_comparison_df[
-                [
-                    "Rank",
-                    "Company",
-                    "Scope 1",
-                    "Scope 2",
-                    "Scope 3",
-                    "Total"
-                ]
+    with c2:
+        donut_df = pd.DataFrame(
+            [
+                {"Scope": "Scope 1", "TonCO2eq": latest["Scope 1"]},
+                {"Scope": "Scope 2", "TonCO2eq": latest["Scope 2"]},
+                {"Scope": "Scope 3", "TonCO2eq": scope3_total_2024},
             ]
-
-            st.dataframe(
-                company_comparison_df,
-                use_container_width=True
-            )
-
-        else:
-
-            st.warning(
-                "Data perusahaan belum cukup untuk comparison analytics."
-            )
-
-        st.divider()
-        
-    with report_tab:
-
-        # =================================================
-        # REPORT PREVIEW
-        # =================================================
-        st.subheader("Sustainability Report Preview")
-
-        report_col1, report_col2 = st.columns([2, 1])
-
-        with report_col1:
-
-            st.markdown("### Executive Summary")
-
-            st.write(
-                f"""
-                Berdasarkan data yang difilter, total emisi karbon saat ini adalah 
-                **{latest_total:,.2f} tCO2e**. Sumber emisi paling dominan berasal dari 
-                **{dominant_scope}**. Status emisi saat ini berada pada kategori 
-                **{status}**.
-                """
-            )
-
-            st.write(
-                f"""
-                Target pengurangan emisi yang digunakan adalah 
-                **{target_reduction_percent:.1f}%** dari baseline 
-                **{baseline_emission:,.2f} tCO2e**. Target emisi setelah pengurangan adalah 
-                **{target_emission:,.2f} tCO2e**.
-                """
-            )
-
-            if latest_total <= target_emission:
-
-                st.success(
-                    "Status target: target pengurangan emisi sudah tercapai."
-                )
-
-            else:
-
-                st.warning(
-                    f"Status target: masih diperlukan pengurangan sebesar "
-                    f"{reduction_needed:,.2f} tCO2e untuk mencapai target."
-                )
-
-        with report_col2:
-
-            st.markdown("### Report Metrics")
-
-            st.metric(
-                "Total Emission",
-                f"{latest_total:,.2f} tCO2e"
-            )
-
-            st.metric(
-                "Dominant Scope",
-                dominant_scope
-            )
-
-            st.metric(
-                "Target Progress",
-                f"{progress_percent:.1f}%"
-            )
-
-        st.divider()
-
-
-        # =================================================
-        # REPORT DETAIL TABLE
-        # =================================================
-        st.subheader("Scope Breakdown for Report")
-
-        report_breakdown_df = pd.DataFrame({
-            "Scope": [
-                "Scope 1",
-                "Scope 2",
-                "Scope 3"
-            ],
-            "Emission (tCO2e)": [
-                latest_scope1,
-                latest_scope2,
-                latest_scope3
-            ]
-        })
-
-        st.dataframe(
-            report_breakdown_df,
-            use_container_width=True
         )
-
-        st.divider()
-
-
-        # =================================================
-        # EXPORT SECTION
-        # =================================================
-        st.subheader("Export Sustainability Report")
-
-        export_col1, export_col2 = st.columns(2)
-
-        with export_col1:
-
-            if st.button("Export PDF Report"):
-
-                pdf_file = export_pdf(
-                    selected_company,
-                    selected_period,
-                    latest_scope1,
-                    latest_scope2,
-                    latest_scope3,
-                    latest_total,
-                    recommendation,
-                    baseline_emission,
-                    target_reduction_percent,
-                    target_emission,
-                    reduction_needed,
-                    progress_percent
-                )
-
-                with open(pdf_file, "rb") as file:
-
-                    st.download_button(
-                        label="Download PDF Report",
-                        data=file,
-                        file_name=pdf_file,
-                        mime="application/pdf"
-                    )
-
-        with export_col2:
-
-            csv_data = filtered_df.to_csv(
-                index=False
-            ).encode("utf-8")
-
-            st.download_button(
-                label="Download Filtered Data CSV",
-                data=csv_data,
-                file_name="filtered_emission_data.csv",
-                mime="text/csv"
-            )
-
-        st.divider()
-
-
-        # =================================================
-        # RECOMMENDATION SUMMARY
-        # =================================================
-        st.subheader("Recommendation Summary")
-
-        st.info(
-            recommendation
+        fig = px.pie(
+            donut_df,
+            names="Scope",
+            values="TonCO2eq",
+            hole=0.58,
+            title="Komposisi Scope 1, 2, dan 3 Tahun 2024",
         )
+        st.plotly_chart(update_fig_layout(fig), width="stretch")
 
-        st.markdown("""
-        <div class="action-card">
-            <div class="info-title">Catatan Pelaporan</div>
-            <div class="info-text">
-                Laporan ini dapat digunakan sebagai ringkasan awal untuk evaluasi
-                keberlanjutan. Untuk kebutuhan pelaporan resmi ESG, data aktivitas,
-                faktor emisi, metodologi perhitungan, dan batasan organisasi tetap
-                perlu diverifikasi ulang.
-            </div>
+    c3, c4 = st.columns([1, 1])
+    with c3:
+        source_long = SCOPE1_SOURCE_TREND.melt(
+            id_vars="Source",
+            value_vars=["2022", "2023", "2024"],
+            var_name="Year",
+            value_name="TonCO2eq",
+        )
+        source_long["Million TonCO2eq"] = source_long["TonCO2eq"] / 1_000_000
+        fig = px.bar(
+            source_long,
+            x="Year",
+            y="Million TonCO2eq",
+            color="Source",
+            title="Scope 1 Berdasarkan Sumber Emisi",
+            barmode="stack",
+        )
+        fig.update_yaxes(title="Juta TonCO2eq")
+        st.plotly_chart(update_fig_layout(fig), width="stretch")
+
+    with c4:
+        scope3_long = SCOPE3_CATEGORIES.melt(
+            id_vars="Category",
+            value_vars=["2023", "2024"],
+            var_name="Year",
+            value_name="TonCO2eq",
+        )
+        scope3_long["Million TonCO2eq"] = scope3_long["TonCO2eq"] / 1_000_000
+        fig = px.bar(
+            scope3_long,
+            x="Category",
+            y="Million TonCO2eq",
+            color="Year",
+            barmode="group",
+            title="Scope 3 Kategori Prioritas",
+        )
+        fig.update_layout(xaxis_tickangle=-25)
+        fig.update_yaxes(title="Juta TonCO2eq")
+        st.plotly_chart(update_fig_layout(fig, height=500), width="stretch")
+
+
+# =====================================================
+# TAB 2 - REGIONAL & SOURCE
+# =====================================================
+with tab2:
+    st.subheader("Baseline 2024 per Regional/Unit")
+
+    selected_unit = st.selectbox(
+        "Pilih regional/unit untuk detail",
+        REGIONAL_BASELINE["Unit"].tolist(),
+        key="selected_unit_baseline",
+    )
+
+    region_long = REGIONAL_BASELINE.melt(
+        id_vars="Unit",
+        value_vars=["Scope 1", "Scope 2"],
+        var_name="Scope",
+        value_name="TonCO2eq",
+    )
+    region_long["Million TonCO2eq"] = region_long["TonCO2eq"] / 1_000_000
+
+    fig = px.bar(
+        region_long.sort_values("Million TonCO2eq", ascending=False),
+        x="Unit",
+        y="Million TonCO2eq",
+        color="Scope",
+        title="Perbandingan Scope 1 dan Scope 2 per Regional/Unit Tahun 2024",
+        barmode="stack",
+    )
+    fig.update_layout(xaxis_tickangle=-25)
+    fig.update_yaxes(title="Juta TonCO2eq")
+    st.plotly_chart(update_fig_layout(fig, height=520), width="stretch")
+
+    c1, c2 = st.columns([1.25, 1])
+
+    with c1:
+        source_unit_long = SCOPE1_BY_UNIT.melt(
+            id_vars="Unit",
+            value_vars=["Internal & External Combustion", "Flare", "Venting & Process", "Fugitive"],
+            var_name="Scope 1 Source",
+            value_name="TonCO2eq",
+        )
+        source_unit_long["Million TonCO2eq"] = source_unit_long["TonCO2eq"] / 1_000_000
+
+        fig = px.bar(
+            source_unit_long,
+            x="Unit",
+            y="Million TonCO2eq",
+            color="Scope 1 Source",
+            title="Detail Scope 1 Berdasarkan Sumber Emisi per Unit",
+            barmode="stack",
+        )
+        fig.update_layout(xaxis_tickangle=-25)
+        fig.update_yaxes(title="Juta TonCO2eq")
+        st.plotly_chart(update_fig_layout(fig, height=520), width="stretch")
+
+    with c2:
+        selected_scope1 = SCOPE1_BY_UNIT[SCOPE1_BY_UNIT["Unit"] == selected_unit].copy()
+        selected_long = selected_scope1.melt(
+            id_vars="Unit",
+            value_vars=["Internal & External Combustion", "Flare", "Venting & Process", "Fugitive"],
+            var_name="Source",
+            value_name="TonCO2eq",
+        )
+        fig = px.pie(
+            selected_long,
+            names="Source",
+            values="TonCO2eq",
+            hole=0.55,
+            title=f"Komposisi Scope 1 - {selected_unit}",
+        )
+        st.plotly_chart(update_fig_layout(fig, height=520), width="stretch")
+
+    baseline_display = REGIONAL_BASELINE.copy()
+    for col in ["Scope 1", "Scope 2", "Scope 1+2"]:
+        baseline_display[col] = baseline_display[col].apply(lambda x: fmt_ton(x, 0))
+    st.dataframe(baseline_display, width="stretch", hide_index=True)
+
+
+# =====================================================
+# TAB 3 - CALCULATOR 2025
+# =====================================================
+with tab3:
+    st.subheader("Kalkulator/Input Emisi 2025")
+
+    st.markdown(
+        """
+        <div class="note-box">
+            Kalkulator ini dibuat mengikuti struktur GHG report: Scope 1 dipisahkan berdasarkan sumber emisi,
+            Scope 2 berasal dari konsumsi listrik, dan Scope 3 mengikuti kategori prioritas yang dipakai PHE.
+            Untuk Scope 3 formal, faktor emisi perlu disesuaikan dengan metodologi resmi perusahaan.
         </div>
-        """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
-        st.divider()
+    with st.form("calculator_2025_form", clear_on_submit=False):
+        id_col1, id_col2 = st.columns(2)
+        with id_col1:
+            calc_year = st.number_input("Tahun pelaporan", min_value=2025, max_value=2035, value=2025, step=1)
+            calc_unit = st.selectbox("Regional/unit", REGIONAL_BASELINE["Unit"].tolist())
+        with id_col2:
+            reporter = st.text_input("Nama penyusun/pengguna", value="")
+            note = st.text_input("Catatan singkat", value="Simulasi input periode berikutnya")
 
-        # =================================================
-        # DATA QUALITY CHECK
-        # =================================================
-        st.subheader("Data Quality Check")
+        st.markdown("### Scope 1 - Direct GHG Emissions")
+        s1c1, s1c2, s1c3, s1c4 = st.columns(4)
+        with s1c1:
+            s1_combustion = st.number_input("Internal & external combustion (TonCO2eq)", min_value=0.0, value=0.0, step=1000.0)
+        with s1c2:
+            s1_flare = st.number_input("Flare / suar bakar (TonCO2eq)", min_value=0.0, value=0.0, step=1000.0)
+        with s1c3:
+            s1_venting = st.number_input("Venting & process (TonCO2eq)", min_value=0.0, value=0.0, step=1000.0)
+        with s1c4:
+            s1_fugitive = st.number_input("Fugitive (TonCO2eq)", min_value=0.0, value=0.0, step=1000.0)
 
-        total_records = len(filtered_df)
+        st.markdown("### Scope 2 - Purchased Electricity")
+        s2c1, s2c2, s2c3 = st.columns(3)
+        with s2c1:
+            electricity_mwh = st.number_input("Konsumsi listrik pihak ketiga (MWh)", min_value=0.0, value=0.0, step=1000.0)
+        with s2c2:
+            grid_factor = st.number_input("Faktor emisi listrik (TonCO2eq/MWh)", min_value=0.0, value=0.790, step=0.001, format="%.3f")
+        with s2c3:
+            manual_scope2 = st.number_input("Override Scope 2 jika sudah tersedia (TonCO2eq)", min_value=0.0, value=0.0, step=1000.0)
 
-        missing_values = filtered_df.isnull().sum().sum()
+        st.markdown("### Scope 3 - Categories Used in PHE Report")
+        s3c1, s3c2 = st.columns(2)
+        with s3c1:
+            s3_cat3 = st.number_input("Category 3 - Fuel & energy-related activities (TonCO2eq)", min_value=0.0, value=0.0, step=1000.0)
+            s3_cat5 = st.number_input("Category 5 - Waste generated in operations (TonCO2eq)", min_value=0.0, value=0.0, step=1000.0)
+        with s3c2:
+            s3_cat10 = st.number_input("Category 10 - Processing of sold products (TonCO2eq)", min_value=0.0, value=0.0, step=1000.0)
+            s3_cat11 = st.number_input("Category 11 - Use of sold products (TonCO2eq)", min_value=0.0, value=0.0, step=1000.0)
 
-        duplicate_records = filtered_df.duplicated().sum()
+        submitted = st.form_submit_button("Hitung dan Simpan Input 2025")
 
-        negative_values = (
-            (filtered_df["Scope 1"] < 0).sum() +
-            (filtered_df["Scope 2"] < 0).sum() +
-            (filtered_df["Scope 3"] < 0).sum() +
-            (filtered_df["Total"] < 0).sum()
-        )
+    if submitted:
+        scope1_total = s1_combustion + s1_flare + s1_venting + s1_fugitive
+        calculated_scope2 = electricity_mwh * grid_factor
+        scope2_total = manual_scope2 if manual_scope2 > 0 else calculated_scope2
+        scope3_total = s3_cat3 + s3_cat5 + s3_cat10 + s3_cat11
+        scope12_total = scope1_total + scope2_total
+        total_all = scope12_total + scope3_total
 
-        dq_col1, dq_col2, dq_col3, dq_col4 = st.columns(4)
-
-        dq_col1.metric(
-            "Total Records",
-            total_records
-        )
-
-        dq_col2.metric(
-            "Missing Values",
-            missing_values
-        )
-
-        dq_col3.metric(
-            "Duplicate Records",
-            duplicate_records
-        )
-
-        dq_col4.metric(
-            "Negative Values",
-            negative_values
-        )
-
-        if missing_values == 0 and duplicate_records == 0 and negative_values == 0:
-
-            st.success(
-                "Data quality terlihat baik untuk filter saat ini."
-            )
-
+        if total_all <= 0:
+            st.error("Input belum valid. Masukkan minimal satu nilai emisi atau data aktivitas.")
         else:
+            record = {
+                "Year": int(calc_year),
+                "Unit": calc_unit,
+                "Reporter": reporter.strip(),
+                "Note": note.strip(),
+                "Internal & External Combustion": s1_combustion,
+                "Flare": s1_flare,
+                "Venting & Process": s1_venting,
+                "Fugitive": s1_fugitive,
+                "Scope 1": scope1_total,
+                "Electricity MWh": electricity_mwh,
+                "Grid Factor": grid_factor,
+                "Scope 2": scope2_total,
+                "Scope 3 Category 3": s3_cat3,
+                "Scope 3 Category 5": s3_cat5,
+                "Scope 3 Category 10": s3_cat10,
+                "Scope 3 Category 11": s3_cat11,
+                "Scope 3": scope3_total,
+                "Scope 1+2": scope12_total,
+                "Total": total_all,
+            }
+            st.session_state.records_2025.append(record)
+            st.success("Input berhasil dihitung dan disimpan di sesi aplikasi.")
 
-            st.warning(
-                "Terdapat potensi masalah kualitas data. Periksa missing value, duplikasi, atau nilai negatif."
-            )
+    if st.session_state.records_2025:
+        latest_record = pd.DataFrame(st.session_state.records_2025).iloc[-1]
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            make_metric("Scope 1 input", f"{fmt_ton(latest_record['Scope 1'], 0)}", "TonCO2eq")
+        with c2:
+            make_metric("Scope 2 input", f"{fmt_ton(latest_record['Scope 2'], 0)}", "TonCO2eq")
+        with c3:
+            make_metric("Scope 3 input", f"{fmt_ton(latest_record['Scope 3'], 0)}", "TonCO2eq")
+        with c4:
+            make_metric("Total input", f"{fmt_ton(latest_record['Total'], 0)}", "TonCO2eq")
 
-        st.divider()
+        records_df = pd.DataFrame(st.session_state.records_2025)
+        st.dataframe(records_df, width="stretch", hide_index=True)
 
-        # =================================================
-        # HISTORY TABLE
-        # =================================================
-        st.subheader("Riwayat Emisi")
-
-        st.dataframe(
-            filtered_df,
-            use_container_width=True
-        )
-
-        st.divider()
-
-        # =================================================
-        # DATA MANAGEMENT PANEL
-        # =================================================
-        st.subheader("Data Management")
-
-        st.warning(
-            "Gunakan fitur ini dengan hati-hati. Data yang dihapus tidak bisa dikembalikan kecuali kamu punya backup."
-        )
-
-        # =================================================
-        # BACKUP CSV
-        # =================================================
-        backup_csv = history_df.to_csv(
-            index=False
-        ).encode("utf-8")
-
+        csv_data = records_df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            label="Download Full Database Backup CSV",
-            data=backup_csv,
-            file_name="emission_database_backup.csv",
-            mime="text/csv"
+            "Download input 2025 CSV",
+            data=csv_data,
+            file_name="phe_input_2025.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("Belum ada input 2025. Gunakan form di atas untuk membuat simulasi atau pencatatan baru.")
+
+
+# =====================================================
+# TAB 4 - COMPARISON & RED FLAG
+# =====================================================
+with tab4:
+    st.subheader("Perbandingan Baseline 2024 vs Input 2025")
+
+    if not st.session_state.records_2025:
+        st.info("Belum ada data input 2025. Isi tab Kalkulator 2025 terlebih dahulu agar perbandingan dapat ditampilkan.")
+    else:
+        records_df = pd.DataFrame(st.session_state.records_2025)
+        grouped_2025 = records_df.groupby("Unit", as_index=False)[["Scope 1", "Scope 2", "Scope 3", "Scope 1+2", "Total"]].sum()
+
+        comparison = REGIONAL_BASELINE.merge(
+            grouped_2025,
+            on="Unit",
+            how="outer",
+            suffixes=(" 2024", " 2025"),
+        ).fillna(0)
+
+        comparison["Change Scope 1+2"] = comparison["Scope 1+2 2025"] - comparison["Scope 1+2 2024"]
+        comparison["Change %"] = comparison.apply(
+            lambda row: (row["Change Scope 1+2"] / row["Scope 1+2 2024"] * 100) if row["Scope 1+2 2024"] > 0 else 0,
+            axis=1,
         )
 
-        st.divider()
+        red_flags: List[str] = []
+        for _, row in comparison.iterrows():
+            if row["Scope 1+2 2025"] > row["Scope 1+2 2024"] * 1.10 and row["Scope 1+2 2025"] > 0:
+                red_flags.append(
+                    f"{row['Unit']}: Scope 1+2 input 2025 naik lebih dari 10% dibanding baseline 2024."
+                )
+            if row["Scope 2 2025"] > row["Scope 2 2024"] * 1.15 and row["Scope 2 2025"] > 0:
+                red_flags.append(
+                    f"{row['Unit']}: Scope 2 input 2025 naik lebih dari 15% dibanding baseline 2024."
+                )
 
-        # =================================================
-        # DELETE BY ID
-        # =================================================
-        st.markdown("### Delete Single Record")
+        if red_flags:
+            st.markdown('<div class="alert-red"><b>Red Flag Alert</b><br>' + "<br>".join(red_flags[:5]) + "</div>", unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="alert-green"><b>Status:</b> Tidak ada red flag utama berdasarkan aturan sederhana 10% total Scope 1+2 dan 15% Scope 2.</div>', unsafe_allow_html=True)
 
-        delete_id = st.number_input(
-            "Masukkan ID data yang ingin dihapus",
-            min_value=1,
-            step=1
+        comp_display = comparison[
+            ["Unit", "Scope 1+2 2024", "Scope 1+2 2025", "Change Scope 1+2", "Change %", "Scope 3 2025", "Total 2025"]
+        ].copy()
+
+        compare_long = comparison.melt(
+            id_vars="Unit",
+            value_vars=["Scope 1+2 2024", "Scope 1+2 2025"],
+            var_name="Period",
+            value_name="TonCO2eq",
         )
+        compare_long["Million TonCO2eq"] = compare_long["TonCO2eq"] / 1_000_000
 
-        confirm_delete = st.checkbox(
-            "Saya yakin ingin menghapus data dengan ID tersebut"
+        fig = px.bar(
+            compare_long,
+            x="Unit",
+            y="Million TonCO2eq",
+            color="Period",
+            barmode="group",
+            title="Perbandingan Scope 1+2 Baseline 2024 dan Input 2025",
         )
+        fig.update_layout(xaxis_tickangle=-25)
+        fig.update_yaxes(title="Juta TonCO2eq")
+        st.plotly_chart(update_fig_layout(fig, height=520), width="stretch")
 
-        if st.button("Delete Selected Record"):
+        c1, c2 = st.columns([1, 1])
+        with c1:
+            total_2024 = comparison["Scope 1+2 2024"].sum()
+            total_2025 = comparison["Scope 1+2 2025"].sum()
+            gap_to_2030 = total_2025 - TARGETS["target_2030"] if total_2025 > 0 else total_2024 - TARGETS["target_2030"]
+            make_metric("Total Scope 1+2 baseline 2024", f"{fmt_million(total_2024)} jt", "TonCO2eq")
+            make_metric("Total Scope 1+2 input 2025", f"{fmt_million(total_2025)} jt", "TonCO2eq")
+        with c2:
+            make_metric("Target 2030", f"{fmt_million(TARGETS['target_2030'])} jt", "TonCO2eq")
+            make_metric("Gap ke target 2030", f"{fmt_ton(gap_to_2030, 0)}", "TonCO2eq")
 
-            if confirm_delete:
+        comp_table = comp_display.copy()
+        for col in ["Scope 1+2 2024", "Scope 1+2 2025", "Change Scope 1+2", "Scope 3 2025", "Total 2025"]:
+            comp_table[col] = comp_table[col].apply(lambda x: fmt_ton(x, 0))
+        comp_table["Change %"] = comp_table["Change %"].apply(lambda x: f"{x:.2f}%")
+        st.dataframe(comp_table, width="stretch", hide_index=True)
 
-                delete_emission_by_id(
-                    delete_id
-                )
 
-                st.success(
-                    f"Data dengan ID {delete_id} berhasil dihapus."
-                )
+# =====================================================
+# TAB 5 - METHODOLOGY, INSIGHTS, DOWNLOAD
+# =====================================================
+with tab5:
+    st.subheader("Insight, Rekomendasi, dan Metodologi")
 
-                st.rerun()
+    latest = SCOPE_TREND[SCOPE_TREND["Year"] == 2024].iloc[0]
+    top_region = REGIONAL_BASELINE.sort_values("Scope 1+2", ascending=False).iloc[0]
+    top_scope1_source = SCOPE1_SOURCE_TREND[["Source", "2024"]].sort_values("2024", ascending=False).iloc[0]
+    top_scope3 = SCOPE3_CATEGORIES.sort_values("2024", ascending=False).iloc[0]
 
-            else:
+    st.markdown(
+        f"""
+        <div class="section-card">
+            <h4>3 Key Insights</h4>
+            <ol>
+                <li><b>Scope 1 masih menjadi sumber dominan.</b> Scope 1 2024 mencapai {fmt_million(latest['Scope 1'])} juta TonCO2eq, lebih besar dari Scope 2.</li>
+                <li><b>Regional/unit tertinggi adalah {top_region['Unit']}.</b> Kontribusi Scope 1+2 baseline 2024 mencapai {fmt_million(top_region['Scope 1+2'])} juta TonCO2eq.</li>
+                <li><b>Sumber Scope 1 terbesar adalah {top_scope1_source['Source']}.</b> Nilainya mencapai {fmt_million(top_scope1_source['2024'])} juta TonCO2eq pada 2024.</li>
+            </ol>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-                st.error(
-                    "Centang konfirmasi terlebih dahulu sebelum menghapus data."
-                )
+    st.markdown(
+        f"""
+        <div class="section-card">
+            <h4>3 Actionable Recommendations</h4>
+            <ol>
+                <li><b>Prioritaskan sumber Scope 1 terbesar.</b> Fokus pada efisiensi combustion, flare reduction, dan kontrol venting/process sesuai sumber dominan per regional.</li>
+                <li><b>Perkuat manajemen listrik untuk Scope 2.</b> Regional dengan Scope 2 tinggi perlu mengevaluasi konsumsi listrik pihak ketiga, efisiensi fasilitas, dan opsi energi rendah karbon.</li>
+                <li><b>Gunakan red flag sebagai trigger aksi.</b> Jika input 2025 naik >10% terhadap baseline 2024, dashboard harus memicu review operasional dan rencana mitigasi.</li>
+            </ol>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        st.divider()
+    st.markdown(
+        f"""
+        <div class="section-card">
+            <h4>Target dan Dekarbonisasi</h4>
+            <p>
+                PHE menggunakan baseline BaU 2030 sebesar <b>{fmt_ton(TARGETS['bau_2030'], 0)} TonCO2eq</b>
+                dan target penurunan <b>32%</b>, sehingga target emisi 2030 menjadi
+                <b>{fmt_ton(TARGETS['target_2030'], 0)} TonCO2eq</b>. Komitmen jangka panjangnya adalah
+                Net Zero GHG Emissions untuk Scope 1 dan 2 pada 2060.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-        # =================================================
-        # RESET ALL DATA
-        # =================================================
-        st.markdown("### Reset All Data")
+    c1, c2 = st.columns([1, 1])
 
-        reset_text = st.text_input(
-            "Ketik RESET untuk menghapus semua data"
+    with c1:
+        st.markdown("### Dataset Readiness Checklist")
+        readiness = pd.DataFrame(
+            [
+                {"Checklist": "Data source clearly identified", "Status": "Ready"},
+                {"Checklist": "Time period explicit", "Status": "2024 baseline + 2025 input"},
+                {"Checklist": "Scope labels clear", "Status": "Scope 1, 2, 3"},
+                {"Checklist": "Units consistent", "Status": "TonCO2eq"},
+                {"Checklist": "Emission categories documented", "Status": "Ready"},
+                {"Checklist": "Red flag rules included", "Status": "Ready"},
+            ]
         )
+        st.dataframe(readiness, width="stretch", hide_index=True)
 
-        if st.button("Reset All Emission Data"):
+    with c2:
+        st.markdown("### Source Notes")
+        st.dataframe(SOURCE_NOTES, width="stretch", hide_index=True)
 
-            if reset_text == "RESET":
+    st.markdown("### Download Dataset Aplikasi")
+    sheets = prepare_download_dataset()
+    excel_bytes = to_excel_bytes(sheets)
 
-                reset_all_emissions()
+    st.download_button(
+        label="Download Excel Dataset Dashboard",
+        data=excel_bytes,
+        file_name="phe_ghg_dashboard_dataset.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
-                st.success(
-                    "Semua data emisi berhasil dihapus."
-                )
-
-                st.rerun()
-
-            else:
-
-                st.error(
-                    "Reset dibatalkan. Kamu harus mengetik RESET dengan huruf kapital."
-                )
-else:
-
-    st.warning(
-        "Belum ada data emisi untuk filter yang dipilih."
+    st.markdown(
+        """
+        <div class="note-box">
+            <b>Catatan batasan:</b> Dashboard ini adalah prototype capstone. Data baseline mengikuti angka yang diambil dari GHG/Sustainability Report PHE 2024.
+            Input 2025 di aplikasi bersifat simulasi/pencatatan awal. Untuk pelaporan resmi, faktor emisi, boundary, dan assurance harus mengikuti metodologi perusahaan dan regulator.
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
